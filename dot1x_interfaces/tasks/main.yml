@@ -7,7 +7,7 @@
 
     - debug: var=interfacesOut.stdout_lines[0]
 
-
+#Filtering based on the interface type, status and VLAN
     - set_fact:
             interfaces: "{{ interfaces|default([]) + [ {'Interface': (item | regex_findall('Gi[\\d+/]+|Te1/0/4[1-8]')), 'Vlan': (item | regex_findall('(notconnect | err-disabled | connected | disabled )\\s+( 1[2-9] | 2[2-3] | 106 | 202 | 305 | 318 )\\s'))    }] }}"
       with_items: "{{ interfacesOut.stdout_lines }}"
