@@ -1,14 +1,2 @@
 interface {{ item.Interface[0] }}
- authentication host-mode multi-auth 
- authentication open 
- authentication order mab dot1x 
- authentication priority dot1x mab 
- authentication port-control auto 
- authentication periodic 
- authentication timer reauthenticate server 
- authentication timer restart 3600 
- authentication timer inactivity 180 
- authentication violation restrict 
- mab 
- dot1x pae authenticator 
- dot1x timeout tx-period 10
+ description Configured with Ansible
