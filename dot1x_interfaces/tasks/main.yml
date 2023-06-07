@@ -1,0 +1,28 @@
+---
+
+    - name: Show Interfaces Status
+      ios_command:
+        commands: "sh interfaces status"
+      register: interfacesOut
+
+    - debug: var=interfacesOut.stdout_lines[0]
+
+
+    - set_fact:
+            interfaces: "{{ interfaces|default([]) + [ {'Interface': (item | regex_findall('Gi[\\d+/]+|Te1/0/4[1-8]')), 'Vlan': (item | regex_findall('(notconnect | err-disabled | connected | disabled )\\s+( 1[2-9] | 2[2-3] | 106 | 202 | 305 | 318 )\\s'))    }] }}"
+      with_items: "{{ interfacesOut.stdout_lines }}"
+
+
+    - debug:
+        msg:
+          - "{{ item.Interface[0] }}"
+          - "{{ item.Vlan[0][1] }}"
+      with_items: "{{ interfaces }}"
+      when: (item.Interface| length > 0) and (item.Vlan | length > 0)
+
+
+    - name: "Apply commands on selected interfaces"
+      ios_config:
+              src: "interface_commands.j2"
+      with_items: "{{ interfaces }}"
+      when: (item.Interface| length > 0) and (item.Vlan | length > 0)
