@@ -1,0 +1,198 @@
+---
+
+#Get config file and save it to a variable
+
+    - name: "Cloning interface config from the switch specified in the prompt"
+      set_fact:
+         running_config: "{{ lookup('file', '{{ config_location }}/{{ filename }}') }}"
+
+#Find interface configurations and save the in the interfaces variable
+
+    - set_fact:
+         interfaces: "{{ interfaces|default([]) + [{ 'Interface': (item | regex_findall('\\ninterface ([a-zA-Z-]+)([0-9\\/_-]+)([^!]+)')) }] }}"
+      with_items: "{{ running_config }}"
+
+
+#Save the interfaces config in a cleaner list. List contains elements like this -> ['InterfaceName',['Interface','Config','line','by','line']]
+
+    - set_fact:
+         temp_list: "{{ item.Interface }}"
+      with_items: "{{ interfaces }}"
+
+    - name: "Take away config lines that we don't need"
+      set_fact:
+         clean_interface_list: "{{ clean_interface_list + [[ item[0], item[1] , item[2].split('\n') | reject('equalto','') | reject('match',' spanning-tree | switchport trunk encapsulation | service-policy.+') | list ]] }}"
+      loop: "{{ temp_list }}"
+      when: '"Vlan" not in item[0] and "GigabitEthernet0/0" not in item[0]+item[1] and "FastEthernet0" not in item[0]+item[1] and "channel" not in item[0]'
+        #I'm ignoring mgmt interfaces,SVI interfaces and portchannels
+
+#Find the uplink interfaces
+
+    - set_fact:
+        uplinks: "{{ uplinks + [item[0]+item[1]] }}"
+      loop: "{{ clean_interface_list }}"
+      when: '" channel-group 1 mode on" in item[2]'   
+      #Works with just the channel-group command but it's better to be more specific to be sure the actual uplinks are found
+
+#Test filters
+
+#    - debug:
+#         msg:
+#           - "{{ item }}"
+#      loop: "{{ clean_interface_list }}"
+#      when: '"Vlan" not in item[0] and "GigabitEthernet0/0" not in item[0]+item[1] and "FastEthernet0" not in item[0]+item[1] and item[0]+item[1] not in uplinks and "channel" not in item[0]'
+
+#Create an interface dictionary with this structure ( key: value -> 1/1/1: GigabitEthernet ). This is used to combat interface name incompatibility between switches where for example the 9200 Catalyst has it's last interfaces TenGigabit whereas the normal ones have just Gigabit.
+#Taking the config from the old switch but keeping only the interface id.
+#So for example if the old switch has interface Gi1/0/42 config and the new one has interface Te1/0/42 we are pasting the running config from Gi1/0/42 to Te1/0/42 just by using the 1/0/42 and not the actual name
+#In case the new switch has multiple interfaces with the same id, like Gi1/1/1 and Te1/1/1 we prompt the user to decide which interface will be configured
+
+
+#Get the new switch's interfaces
+
+    - name: Show run on new device to get interfaces
+      ios_command:
+        commands: "sh run | i interface"
+      register: interfacesOut
+
+
+#Put the interfaces in a list
+
+    - name: Creating initial interface list
+      set_fact:
+         interfaces_new: "{{ interfaces_new|default([]) + [{ 'Interface': (item | regex_findall('^interface ([a-zA-Z-]+)([0-9\\/_-]+)')) }] }}"
+      with_items: "{{ interfacesOut.stdout_lines }}"
+
+
+#Put them in the aformentioned dictionary, first we create an empty one then make the full dictionary appending all the interfaces with the same id under the same key
+
+    - name: Create initial Interface Dictionary
+      set_fact:
+            interface_dictionary: "{{ interface_dictionary|default({}) | combine({ item.Interface[0][1]: []  }) }}"
+      with_items: "{{ interfaces_new }}"
+      when: 'item.Interface|length > 0 and "Vlan" not in item.Interface[0][0] and "GigabitEthernet0/0" not in  item.Interface[0][0]+item.Interface[0][1] and "FastEthernet0" not in item.Interface[0][0]+item.Interface[0][1] and "channel" not in item.Interface[0][0]'
+
+    - name: Create Interface Dictionary
+      set_fact:
+            interface_dictionary: "{{ interface_dictionary|default({}) | combine({ item.Interface[0][1]: interface_dictionary[item.Interface[0][1]] +  [item.Interface[0][0]]  }) }}"
+      with_items: "{{ interfaces_new }}"
+      when: 'item.Interface|length > 0 and "Vlan" not in item.Interface[0][0] and "GigabitEthernet0/0" not in item.Interface[0][0]+item.Interface[0][1] and "FastEthernet0" not in item.Interface[0][0]+item.Interface[0][1] and "channel" not in item.Interface[0][0]'
+
+#Some debugs
+
+#    - debug:
+#        msg:
+#           - "Interface {{ item[0]+item[1] }} config will be copied to  -----> {{ interface_dictionary[item[1]] }}"
+#      loop: "{{ clean_interface_list }}"
+#      when: 'item[0]+item[1] not in uplinks and interface_dictionary[item[1]] is defined and item[0] in interface_dictionary[item[1]]' 
+
+
+#    - debug:
+#        msg:
+#           - "Interface {{ item[0]+item[1] }} config will be put here -----> {{ interface_dictionary[item[1]][0]+item[1] }}"
+#      loop: "{{ clean_interface_list }}"
+#      when: 'item[0]+item[1] not in uplinks and interface_dictionary[item[1]] is defined and item[0] not in interface_dictionary[item[1]] and interface_dictionary[item[1]]| length < 2'
+
+#If anomalies are detected where there are multiple interfaces with the same identifier we ask for user input and put those inputs in the dictionary
+#What we consider an anomaly is when an interface identifier has multiple types of interfaces associated with it and the original interface type is not in any of the other types
+#For example ----> the initial switch has interface Gi1/1/1 but the new one has Te1/1/1,TwentyFiveGigE1/1/1 and FourtyGigabit1/1/1. In this case the user has to decide where to put the config
+
+    - name: Separate anomalies
+      set_fact:
+           anomalies: "{{ anomalies|default({}) | combine({ item[1]: interface_dictionary[item[1]] }) }}"
+      loop: "{{ clean_interface_list }}"
+      when: 'item[0]+item[1] not in uplinks and interface_dictionary[item[1]] is defined and item[0] not in interface_dictionary[item[1]] and interface_dictionary[item[1]]| length > 1'
+
+
+    - pause:
+        prompt: "Anomaly found, multiple interfaces with the same identifier but none contain the original one: {{ item }} -> {{ anomalies[item] }}. Choose only one interface(write the exact name displayed on this line)"
+        echo: yes
+      register: answers
+      with_items: "{{ anomalies }}"
+
+
+    - name: Put user inputs into dictionary eliminating anomalies
+      set_fact:
+          anomalies: "{{ anomalies|default({}) | combine({ item['item']: [item['user_input']] }) }}"
+      with_items: "{{ answers.results }}"
+      when:  item['user_input'] is defined
+
+#    - debug:
+#        msg:
+#           - "{{ anomalies }}"
+
+
+
+
+#Take the corectly formatted list and apply the config on the device
+
+
+#Case 1: Found the interface id+name regardless if the dictionary has multiple interface names for the same id
+
+    - name: Apply config on interfaces Case 1
+      ios_config:
+         lines: "{{ item[2] }}"
+         parents:
+            - "interface {{ item[0]+item[1] }}"
+      loop: "{{ clean_interface_list }}"
+      when: 'item[0]+item[1] not in uplinks and interface_dictionary[item[1]] is defined and item[0] in interface_dictionary[item[1]]'
+#      when: '"Vlan" not in item[0] and "GigabitEthernet0/0" not in item[0] and "FastEthernet0" not in item[0] and item[0] not in uplinks and "channel" not in item[0]'
+
+
+#Case 2: The interface name for that id does not match what's on the new switch. This is the case where in the new switch there are no multiple interface names. The value in the dictionary will be used
+    - name: Apply config on interfaces Case 2
+      ios_config:
+         lines: "{{ item[2] }}"
+         parents:
+            - "interface {{ interface_dictionary[item[1]][0]+item[1] }}"
+      loop: "{{ clean_interface_list }}"
+      when: 'item[0]+item[1] not in uplinks and interface_dictionary[item[1]] is defined and item[0] not in interface_dictionary[item[1]] and interface_dictionary[item[1]]| length < 2'
+
+#Case 3: Anomalies
+    - name: Apply config on interfaces Anomalies
+      ios_config:
+         lines: "{{ item[2] }}"
+         parents:
+            - "interface {{ anomalies[item[1]][0]+item[1] }}"
+      loop: "{{ clean_interface_list }}"
+      when: 'item[0]+item[1] not in uplinks and anomalies[item[1]] is defined and item[0] not in anomalies[item[1]]'
+
+
+
+
+
+    - name: Configure First Uplink
+      #Put your own config here as needed
+      ios_config:
+         lines: 
+            - description Link to distribution switch 1
+            - switchport mode trunk
+            - switchport nonegotiate
+            - channel-group 1 mode on
+            - no shut
+         parents:
+            - "interface {{ first_uplink }}"
+
+
+    - name: Configure Second Uplink
+      ios_config:
+         lines:
+            - description Link to distribution switch 2
+            - switchport mode trunk
+            - switchport nonegotiate
+            - channel-group 1 mode on
+            - no shut
+         parents:
+            - "interface {{ second_uplink }}"
+
+
+    - name: Configure PortChannel
+      ios_config:
+         lines:
+            - description Link to ddistribution switches
+            - switchport mode trunk
+            - switchport nonegotiate
+         parents:
+            - "interface Port-channel1"
+
+

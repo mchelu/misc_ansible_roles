@@ -1,0 +1,23 @@
+---
+
+- name: New Cisco Switch deployment
+  hosts: host_group
+  gather_facts: no
+  vars:
+    config_location: '/path/to/configs/location'
+  vars_prompt:
+
+          - name: filename
+            prompt: Please enter the config filename from the old device
+            private: no
+          - name: first_uplink
+            prompt: Please enter the FIRST interface you want to use as an uplink to the distribution switch
+            private: no
+          - name: second_uplink
+            prompt: Please enter the SECOND interface you want to use as an uplink to distribution switch
+            private: no
+
+  roles:
+    - interface_config_clone
+
+
