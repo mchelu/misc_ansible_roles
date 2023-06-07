@@ -1,0 +1,10 @@
+---
+
+vlans:
+      10: "Users"
+      20: "DEV"
+      30: "Engineering"
+      40: "HR"
+      50: "Management"
+
+

@@ -1,0 +1,7 @@
+---
+
+   - name: "Configure VLANS"
+     ios_config:
+             src: "vlans.j2"
+     loop: "{{ vlans|dict2items }}"
+
